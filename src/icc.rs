@@ -1,4 +1,4 @@
-﻿//! Gestion des couleurs (profils ICC) : conversion des images vers le profil de sortie
+//! Gestion des couleurs (profils ICC) : conversion des images vers le profil de sortie
 //! et épreuve écran.
 
 use image::RgbaImage;
@@ -184,15 +184,41 @@ impl Color {
     }
 }
 
-/// Profils installés dans Windows.
+/// Dossiers des profils ICC installés sur le système.
+fn profile_dirs() -> Vec<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    if cfg!(windows) {
+        let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        vec![Path::new(&win).join("System32").join("spool").join("drivers").join("color")]
+    } else if cfg!(target_os = "macos") {
+        let mut v = vec!["/Library/ColorSync/Profiles".into(), "/System/Library/ColorSync/Profiles".into()];
+        v.extend(home.map(|h| h.join("Library/ColorSync/Profiles")));
+        v
+    } else {
+        let mut v = vec!["/usr/share/color/icc".into(), "/usr/local/share/color/icc".into(), "/var/lib/color/icc".into()];
+        if let Some(h) = home {
+            v.push(h.join(".local/share/icc"));
+            v.push(h.join(".color/icc"));
+        }
+        v
+    }
+}
+
+/// Profils installés sur le système (un niveau de sous-dossiers, comme /usr/share/color/icc/colord).
 pub fn installed_profiles() -> Vec<std::path::PathBuf> {
-    let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
-    let dir = Path::new(&win).join("System32").join("spool").join("drivers").join("color");
-    let mut v: Vec<_> = std::fs::read_dir(dir)
+    let mut files = Vec::new();
+    for dir in profile_dirs() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                files.extend(std::fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()));
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    let mut v: Vec<_> = files
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
         .filter(|p| {
             p.extension()
                 .map(|e| {

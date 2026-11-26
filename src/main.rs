@@ -65,7 +65,7 @@ fn window_icon() -> egui::IconData {
     }
 }
 
-/// Segoe UI (police de Windows) si elle est là, sinon la police d'egui.
+/// Segoe UI (police de Windows) si elle est là, sinon la police d'egui (Mac, Linux).
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let dir = Path::new("C:\\Windows\\Fonts");
@@ -756,12 +756,26 @@ impl App {
         let settings = self.settings.clone();
         let tx = self.tx.clone();
         let rctx = ctx.clone();
-        self.say("Préparation de l'impression… la fenêtre d'impression Windows va s'ouvrir.", false);
+        let icc = self.color.out.as_ref().map(|p| p.bytes.clone());
+        if print::SEND_PDF {
+            self.say(format!("Préparation de l'impression… envoi à « {printer} »."), false);
+        } else {
+            self.say("Préparation de l'impression… la fenêtre d'impression Windows va s'ouvrir.", false);
+        }
         std::thread::spawn(move || {
             let dir: PathBuf = std::env::temp_dir().join("planche-contact");
             let _ = std::fs::create_dir_all(&dir);
             let mut files = Vec::new();
-            for pg in 0..settings.pages {
+            if print::SEND_PDF {
+                // Mac et Linux : la planche en PDF A4, comme l'export.
+                let f = dir.join("planche.pdf");
+                if let Err(e) = render::export_pdf(&imgs, &layout, &settings, settings.pages, &f, icc.as_ref().map(|b| b.as_slice())) {
+                    let _ = tx.send((format!("Échec du rendu : {e}"), true));
+                    return;
+                }
+                files.push(f);
+            }
+            for pg in (0..settings.pages).filter(|_| !print::SEND_PDF) {
                 let img = render::render_page(&imgs, &layout, &settings, pg, 300.0);
                 let f = dir.join(format!("page{}.png", pg + 1));
                 if let Err(e) = img.save(&f) {
@@ -889,7 +903,11 @@ fn open_file(path: &Path) -> std::io::Result<()> {
     {
         std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn().map(|_| ())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn().map(|_| ())
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
     }
@@ -949,7 +967,8 @@ impl eframe::App for App {
                 self.pending_undo = -1;
             }
             // Suppr : un exemplaire de moins, ou retire le design s'il n'en reste qu'un.
-            if ctx.input(|i| i.key_pressed(Key::Delete)) {
+            // Sur Mac, la touche « effacer » envoie Retour arrière.
+            if ctx.input(|i| i.key_pressed(Key::Delete) || cfg!(target_os = "macos") && i.key_pressed(Key::Backspace)) {
                 if let Some(i) = self.selected.filter(|&i| i < self.designs.len()) {
                     let d = &mut self.designs[i];
                     if d.count > 1 {

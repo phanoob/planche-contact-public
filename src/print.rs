@@ -1,4 +1,7 @@
-﻿//! Impression directe via Windows (System.Drawing.Printing pilotée par PowerShell).
+//! Impression directe.
+//! - Windows : boîte d'impression du système (System.Drawing.Printing pilotée par PowerShell),
+//!   pages envoyées en PNG A4 à 300 dpi.
+//! - Mac et Linux : CUPS (`lpstat`, `lp`), planche envoyée en PDF A4, sans mise à l'échelle.
 
 use std::path::Path;
 use std::process::Command;
@@ -14,6 +17,7 @@ fn hidden(cmd: &mut Command) -> &mut Command {
 }
 
 /// Renvoie (liste des imprimantes, imprimante par défaut).
+#[cfg(windows)]
 pub fn list_printers() -> (Vec<String>, String) {
     let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; \
         Add-Type -AssemblyName System.Drawing; \
@@ -37,6 +41,7 @@ pub fn list_printers() -> (Vec<String>, String) {
     (list, default)
 }
 
+#[cfg(windows)]
 const PRINT_SCRIPT: &str = r#"
 param([string]$Printer, [string]$Files)
 Add-Type -AssemblyName System.Drawing
@@ -75,7 +80,9 @@ if ($res -ne [System.Windows.Forms.DialogResult]::OK) { exit 3 }
 $doc.Print()
 "#;
 
-/// Ouvre la boîte d'impression Windows (papier, qualité, miroir…) puis envoie les pages\n/// (PNG A4, 300 dpi). `printer` est l'imprimante proposée au départ.
+/// Ouvre la boîte d'impression Windows (papier, qualité, miroir…) puis envoie les pages
+/// (PNG A4, 300 dpi). `printer` est l'imprimante proposée au départ.
+#[cfg(windows)]
 pub fn print_files(printer: &str, files: &[std::path::PathBuf], dir: &Path) -> Result<(), String> {
     let script = dir.join("imprimer.ps1");
     std::fs::write(&script, PRINT_SCRIPT).map_err(|e| e.to_string())?;
@@ -102,4 +109,60 @@ pub fn print_files(printer: &str, files: &[std::path::PathBuf], dir: &Path) -> R
     }
 }
 
+/// Sous Windows, `print_files` attend des pages PNG A4 à 300 dpi.
+#[cfg(windows)]
+pub const SEND_PDF: bool = false;
+/// Mac et Linux : un seul PDF A4 (profil ICC embarqué), imprimé tel quel par CUPS.
+#[cfg(not(windows))]
+pub const SEND_PDF: bool = true;
 
+/// Mac et Linux : sortie d'une commande CUPS, en anglais (textes stables à lire).
+#[cfg(not(windows))]
+fn cups(prog: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(prog).args(args).env("LC_ALL", "C").env("LANG", "C").output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Renvoie (liste des imprimantes, imprimante par défaut), d'après CUPS.
+#[cfg(not(windows))]
+pub fn list_printers() -> (Vec<String>, String) {
+    // « NOM accepting requests since … » : le nom est le premier mot.
+    let list: Vec<String> = cups("lpstat", &["-a"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect();
+    // « system default destination: NOM »
+    let default = cups("lpstat", &["-d"])
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.split_once("destination:").map(|(_, n)| n.trim().to_string()))
+        .unwrap_or_default();
+    (list, default)
+}
+
+/// Envoie les fichiers (PDF A4) à l'imprimante par `lp`, à taille réelle.
+/// Pas de boîte d'impression : papier et qualité sont les réglages par défaut de l'imprimante
+/// (préférences du système, ou interface de CUPS sur http://localhost:631).
+#[cfg(not(windows))]
+pub fn print_files(printer: &str, files: &[std::path::PathBuf], _dir: &Path) -> Result<(), String> {
+    let mut cmd = Command::new("lp");
+    hidden(&mut cmd).env("LC_ALL", "C");
+    if !printer.is_empty() {
+        cmd.arg("-d").arg(printer);
+    }
+    cmd.args(["-o", "media=A4", "-o", "print-scaling=none", "-o", "fit-to-page=false"]);
+    cmd.args(files);
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "commande « lp » introuvable : installez CUPS (paquet cups-client sous Linux)".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}

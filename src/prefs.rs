@@ -1,5 +1,6 @@
 //! Réglages enregistrés automatiquement (et dernière planche), dans
-//! %APPDATA%\PlancheContact\reglages.json (à côté de l'exe en version portable).
+//! %APPDATA%\PlancheContact\reglages.json sous Windows, ~/Library/Application Support/PlancheContact
+//! sur Mac, ~/.config/PlancheContact sous Linux (à côté de l'exe en version portable).
 
 use crate::icc::Intent;
 use crate::model::{Format, Settings, Shape};
@@ -126,10 +127,19 @@ pub fn dir() -> PathBuf {
             return d;
         }
     }
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("PlancheContact")
+    config_base().unwrap_or_else(std::env::temp_dir).join("PlancheContact")
+}
+
+/// Dossier des réglages des applications pour l'utilisateur.
+fn config_base() -> Option<PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        var("APPDATA")
+    } else if cfg!(target_os = "macos") {
+        var("HOME").map(|h| h.join("Library").join("Application Support"))
+    } else {
+        var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))
+    }
 }
 
 fn file() -> PathBuf {

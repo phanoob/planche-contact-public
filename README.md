@@ -2,7 +2,8 @@
 
 ![Icône](assets/icon.png)
 
-Application Windows en Rust (egui) pour préparer des planches A4 de magnets à imprimer en sublimation.
+Application en Rust (egui) pour préparer des planches A4 de magnets à imprimer en sublimation.
+Faite pour Windows ; prévue aussi pour Mac et Linux (voir plus bas, non testé).
 
 ## Fonctions
 
@@ -32,8 +33,8 @@ Application Windows en Rust (egui) pour préparer des planches A4 de magnets à 
   compensation du point noir, aperçu fidèle à l'écran, teinte R/V/B, luminosité, contraste.
 - Export PDF (profil ICC embarqué) ou impression via la boîte d'impression Windows
   (papier, qualité, miroir du pilote…).
-- Réglages et dernière planche enregistrés automatiquement dans
-  `%APPDATA%\PlancheContact\reglages.json`.
+- Réglages et dernière planche enregistrés automatiquement dans `PlancheContact/reglages.json`,
+  sous `%APPDATA%` (Windows), `~/Library/Application Support` (Mac) ou `~/.config` (Linux).
 
 ## Compiler
 
@@ -59,6 +60,21 @@ $env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE\.cargo\registry\src=deps 
 
 On peut aussi passer des images au lancement : `planche-contact.exe "image.png*4" "autre.png*2"`
 (le nombre après `*` est le nombre d'exemplaires).
+
+## Mac et Linux
+
+Non testé faute de machine, mais prévu pour compiler et fonctionner :
+
+- Compiler : `cargo build --release` (il faut un compilateur C pour LittleCMS : Xcode Command Line
+  Tools sur Mac, `gcc` sous Linux).
+- Impression : par CUPS (`lpstat`, `lp`). Pas de boîte d'impression : la planche part en PDF A4,
+  à taille réelle, avec les réglages par défaut de l'imprimante (papier, qualité, couleurs du
+  pilote : préférences du système ou http://localhost:631).
+- PDF : lus avec Poppler (`pdfinfo`, `pdftoppm`) : paquet `poppler-utils` sous Linux,
+  `brew install poppler` sur Mac.
+- Profils ICC proposés : ceux de ColorSync (Mac) ou de `/usr/share/color/icc` et
+  `~/.local/share/icc` (Linux).
+- Sur Mac, la touche « effacer » retire un exemplaire comme Suppr ; Cmd remplace Ctrl.
 
 ## Icône
 

@@ -1,5 +1,7 @@
-//! Lecture des PDF : chaque page devient une image, rendue par le moteur PDF intégré à Windows
-//! (Windows.Data.Pdf, aucune DLL à installer).
+//! Lecture des PDF : chaque page devient une image.
+//! - Windows : moteur PDF intégré (Windows.Data.Pdf, aucune DLL à installer).
+//! - Mac et Linux : outils de Poppler (`pdfinfo`, `pdftoppm`), à installer à part
+//!   (Linux : paquet poppler-utils ; Mac : `brew install poppler`).
 
 use image::RgbaImage;
 use std::path::Path;
@@ -67,11 +69,68 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-    pub fn page_count(_: &Path) -> Result<u32, String> {
-        Err("lecture des PDF disponible seulement sous Windows".into())
+    use std::process::Command;
+
+    const MISSING: &str = "pour lire les PDF, installez Poppler (Linux : paquet poppler-utils ; Mac : brew install poppler)";
+
+    /// Outil de Poppler : dans le PATH, ou dans les dossiers de Homebrew (une appli lancée
+    /// depuis le Finder ne voit pas le PATH du terminal).
+    fn tool(name: &str) -> Command {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            let p = Path::new(dir).join(name);
+            if p.is_file() {
+                return Command::new(p);
+            }
+        }
+        Command::new(name)
     }
-    pub fn render(_: &Path, _: u32) -> Result<RgbaImage, String> {
-        Err("lecture des PDF disponible seulement sous Windows".into())
+
+    fn run(mut cmd: Command) -> Result<Vec<u8>, String> {
+        let out = cmd.env("LC_ALL", "C").env("LANG", "C").output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound { MISSING.to_string() } else { e.to_string() }
+        })?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if msg.to_lowercase().contains("password") {
+            Err("PDF protégé par un mot de passe".into())
+        } else if msg.is_empty() {
+            Err("PDF illisible".into())
+        } else {
+            Err(msg)
+        }
+    }
+
+    pub fn page_count(path: &Path) -> Result<u32, String> {
+        let mut cmd = tool("pdfinfo");
+        cmd.arg(path);
+        let out = run(cmd)?;
+        String::from_utf8_lossy(&out)
+            .lines()
+            .find_map(|l| l.strip_prefix("Pages:").and_then(|n| n.trim().parse().ok()))
+            .ok_or_else(|| "nombre de pages introuvable".to_string())
+    }
+
+    pub fn render(path: &Path, index: u32) -> Result<RgbaImage, String> {
+        // Fichier de sortie unique : plusieurs pages peuvent être rendues en même temps.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join("planche-contact");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let base = dir.join(format!("pdf-{}-{n}", std::process::id()));
+        let page = (index + 1).to_string();
+        let mut cmd = tool("pdftoppm");
+        // -scale-to : le côté le plus long de la page fait LONG_SIDE_PX pixels.
+        cmd.args(["-png", "-singlefile", "-f", &page, "-l", &page, "-scale-to"])
+            .arg((LONG_SIDE_PX as u32).to_string())
+            .arg(path)
+            .arg(&base);
+        run(cmd)?;
+        let png = base.with_extension("png");
+        let img = image::open(&png).map(|i| i.to_rgba8()).map_err(|e| e.to_string());
+        let _ = std::fs::remove_file(&png);
+        img
     }
 }
 
@@ -85,8 +144,8 @@ pub fn render(path: &Path, index: u32) -> Result<RgbaImage, String> {
     run(path, move |p| imp::render(p, index))
 }
 
-/// Exécute dans un fil à part : les appels Windows attendent des opérations
-/// asynchrones, qu'on évite de bloquer sur le fil de la fenêtre.
+/// Exécute dans un fil à part : les appels Windows attendent des opérations asynchrones,
+/// et les outils de Poppler sont des programmes externes ; on évite de bloquer la fenêtre.
 fn run<T: Send>(path: &Path, f: impl FnOnce(&Path) -> Result<T, String> + Send) -> Result<T, String> {
     std::thread::scope(|s| s.spawn(|| f(path)).join().unwrap_or_else(|_| Err("erreur interne du lecteur PDF".into())))
 }
